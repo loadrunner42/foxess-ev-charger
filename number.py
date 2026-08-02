@@ -132,25 +132,36 @@ class FoxESSNumber(NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        raw = (self._coordinator.data or {}).get(self.entity_description.data_key)
+        desc = self.entity_description
+        raw = self._coordinator.desired_or_actual(
+            desc.register,
+            desc.data_key,
+        )
+        
         if raw is None:
             return None
-        return self.entity_description.scale_to_ha(raw)
+        
+        return desc.scale_to_ha(raw)
 
-    async def async_set_native_value(self, value: float) -> None:
+    async def async_set_native_value(
+        self,
+        value: float,
+    ) -> None:
         desc = self.entity_description
-        raw  = desc.scale_to_raw(value)
+        raw = desc.scale_to_raw(value)
+    
         _LOGGER.debug(
-            "FoxESS: write %s=%s (raw=%d) → 0x%04X",
-            desc.key, value, raw, desc.register,
+            "FoxESS: cache %s=%s (raw=%d) for 0x%04X",
+            desc.key,
+            value,
+            raw,
+            desc.register,
         )
-        success = await self.hass.async_add_executor_job(
-            self._client.write_holding_register, desc.register, raw
+    
+        await self._coordinator.async_cache_register(
+            desc.register,
+            raw,
+            desc.data_key,
         )
-        if success:
-            self._coordinator.data[desc.data_key] = raw
-            self.async_write_ha_state()
-        else:
-            _LOGGER.error("FoxESS: Write failed for %s", desc.key)
-        await asyncio.sleep(1.5)
-        await self._coordinator.async_request_refresh()
+    
+        self.async_write_ha_state()
