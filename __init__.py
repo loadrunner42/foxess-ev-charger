@@ -109,7 +109,12 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
         )
     
         self._last_status: int | None = None
-        self._session_limits_pending = False         
+        # True means use the stored time and energy limits.
+        # False means send 0xFFFF to both registers to disable them.
+        self.session_limits_enabled = False
+        # Set when the enable switch or either session-limit number changes.
+        self._session_limits_pending = False     
+                     
         super().__init__(
             hass, _LOGGER, name=DOMAIN,
             update_interval=timedelta(seconds=scan_interval),
@@ -123,25 +128,40 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
             return
     
         commands = stored.get("commands", {})
-    
-        if not isinstance(commands, dict):
-            return
-    
-        for address, value in commands.items():
-            try:
-                register = int(address)
-                raw_value = int(value)
-            except (TypeError, ValueError):
-                continue
-    
-            if register in self._REGISTER_TO_DATA_KEY:
-                self.command_cache[register] = raw_value
+        
+        if isinstance(commands, dict):
+            for address, value in commands.items():
+                try:
+                    register = int(address)
+                    raw_value = int(value)
+                except (TypeError, ValueError):
+                    continue
+        
+                if register in self._REGISTER_TO_DATA_KEY:
+                    self.command_cache[register] = raw_value
+        
+        enabled = stored.get("session_limits_enabled")
+        
+        if isinstance(enabled, bool):
+            self.session_limits_enabled = enabled
     
         _LOGGER.debug(
-            "Restored FoxESS desired settings: %s",
+            "Restored FoxESS desired settings: commands=%s, "
+            "session_limits_enabled=%s",
             self.command_cache,
+            self.session_limits_enabled,
         )
 
+    async def _async_save_command_cache(self) -> None:
+        """Persist desired register values and session-limit state."""
+        await self._store.async_save({
+            "commands": {
+                str(register): raw_value
+                for register, raw_value in self.command_cache.items()
+            },
+            "session_limits_enabled": self.session_limits_enabled,
+        })
+    
     async def async_cache_register(
         self,
         address: int,
@@ -159,12 +179,7 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
         if address in self._SESSION_BLOCK:
             self._session_limits_pending = True
     
-        await self._store.async_save({
-            "commands": {
-                str(register): raw_value
-                for register, raw_value in self.command_cache.items()
-            }
-        })
+        await self._async_save_command_cache()
     
         _LOGGER.debug(
             "Cached desired FoxESS setting 0x%04X=%d; "
@@ -173,6 +188,22 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
             value,
         )
 
+    async def async_set_session_limits_enabled(
+        self,
+        enabled: bool,
+    ) -> None:
+        """Store whether session time and energy limits are enabled."""
+        self.session_limits_enabled = enabled
+        self._session_limits_pending = True
+    
+        await self._async_save_command_cache()
+    
+        _LOGGER.debug(
+            "Cached session limits enabled=%s; "
+            "change will be sent on the next applicable poll",
+            enabled,
+        )
+    
     def desired_or_actual(
         self,
         address: int,
@@ -208,6 +239,7 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
             desired = dict(self.command_cache)
             previous_status = self._last_status
             session_limits_pending = self._session_limits_pending
+            session_limits_enabled = self.session_limits_enabled
     
             data, current_status, session_limits_written = (
                 await self.hass.async_add_executor_job(
@@ -215,6 +247,7 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
                     desired,
                     previous_status,
                     session_limits_pending,
+                    session_limits_enabled,
                 )
             )
     
@@ -233,6 +266,7 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
         desired: dict[int, int],
         previous_status: int | None,
         session_limits_pending: bool,
+        session_limits_enabled: bool,
     ) -> tuple[dict, int | None, bool]:
         # Start from the last known-good values instead of a blank dict, so a
         # single failed register-block read doesn't wipe out everything else
@@ -352,11 +386,15 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
         )
         
         if should_write_session_limits:
-            session_values = self._block_values(
-                self._SESSION_BLOCK,
-                desired,
-                actual,
-            )
+            if session_limits_enabled:
+                session_values = self._block_values(
+                    self._SESSION_BLOCK,
+                    desired,
+                    actual,
+                )
+            else:
+                # The protocol defines 0xFFFF as disabled for both limits.
+                session_values = [0xFFFF, 0xFFFF]
         
             if session_values is not None:
                 session_limits_written = (
@@ -366,7 +404,14 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
                     )
                 )
         
-                if not session_limits_written:
+                if session_limits_written:
+                    _LOGGER.debug(
+                        "Wrote session block 0x3003-0x3004: "
+                        "enabled=%s values=%s",
+                        session_limits_enabled,
+                        session_values,
+                    )
+                else:
                     _LOGGER.warning(
                         "Could not write session block 0x3003-0x3004"
                     )
