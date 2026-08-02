@@ -34,7 +34,10 @@ class FoxESSModbusClient:
         try:
             with socket.create_connection((self._host, self._port), timeout=timeout) as sock:
                 sock.sendall(request)
-                return sock.recv(1024)
+                header = recv_exact(sock, 7)
+                length = int.from_bytes(header[4:6], "big")
+                payload = recv_exact(sock, length - 1)
+                return header + payload
         except Exception as ex:
             _LOGGER.error("Modbus TCP %s:%s – Verbindungsfehler: %s", self._host, self._port, ex)
             return None
