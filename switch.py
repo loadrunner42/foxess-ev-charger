@@ -36,12 +36,13 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
     )
 
 
-class FoxESSChargingSwitch(SwitchEntity):
+class FoxESSChargingSwitch(CoordinatorEntity[FoxESSChargerCoordinator], SwitchEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:ev-plug-type2"
 
     def __init__(self, coordinator: FoxESSChargerCoordinator,
                  client: FoxESSModbusClient, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
         self._coordinator = coordinator
         self._client      = client
         self._attr_unique_id   = f"{entry.entry_id}_charging"
@@ -77,12 +78,13 @@ class FoxESSChargingSwitch(SwitchEntity):
         await self._coordinator.async_request_refresh()
 
 
-class FoxESSLockSwitch(SwitchEntity):
+class FoxESSLockSwitch(CoordinatorEntity[FoxESSChargerCoordinator], SwitchEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:lock"
 
     def __init__(self, coordinator: FoxESSChargerCoordinator,
                  client: FoxESSModbusClient, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
         self._coordinator = coordinator
         self._client      = client
         self._attr_unique_id   = f"{entry.entry_id}_lock"
@@ -122,7 +124,7 @@ class FoxESSLockSwitch(SwitchEntity):
         await self._coordinator.async_request_refresh()
 
 
-class FoxESSAutoPhaseSwitchSwitch(SwitchEntity):
+class FoxESSAutoPhaseSwitchSwitch(CoordinatorEntity[FoxESSChargerCoordinator], SwitchEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:auto-fix"
     # Phase switching requires an external phase-switch-box accessory, which
@@ -131,6 +133,7 @@ class FoxESSAutoPhaseSwitchSwitch(SwitchEntity):
 
     def __init__(self, coordinator: FoxESSChargerCoordinator,
                  client: FoxESSModbusClient, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
         self._coordinator = coordinator
         self._client      = client
         self._attr_unique_id   = f"{entry.entry_id}_auto_phase_switch"
