@@ -35,7 +35,7 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
     )
 
 
-class FoxESSWorkModeSelect(SelectEntity):
+class FoxESSWorkModeSelect(CoordinatorEntity[FoxESSChargerCoordinator], SelectEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:ev-station"
     _options_map = WORK_MODE_MAP
@@ -43,6 +43,7 @@ class FoxESSWorkModeSelect(SelectEntity):
 
     def __init__(self, coordinator: FoxESSChargerCoordinator,
                  client: FoxESSModbusClient, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
         self._coordinator = coordinator
         self._client      = client
         self._attr_unique_id   = f"{entry.entry_id}_work_mode"
@@ -80,7 +81,7 @@ class FoxESSWorkModeSelect(SelectEntity):
         self.async_write_ha_state()
 
 
-class FoxESSPhaseSelect(SelectEntity):
+class FoxESSPhaseSelect(CoordinatorEntity[FoxESSChargerCoordinator], SelectEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:electric-switch"
     # Phase switching is only meaningful with an external phase-switch-box
@@ -91,6 +92,7 @@ class FoxESSPhaseSelect(SelectEntity):
 
     def __init__(self, coordinator: FoxESSChargerCoordinator,
                  client: FoxESSModbusClient, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
         self._coordinator = coordinator
         self._client      = client
         self._attr_unique_id   = f"{entry.entry_id}_phase_sequence"
