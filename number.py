@@ -119,6 +119,7 @@ class FoxESSNumber(
         description: FoxESSNumberDescription,
         entry: ConfigEntry,
     ) -> None:
+        super().__init__(coordinator)
         self._coordinator = coordinator
         self._client      = client
         self.entity_description = description
