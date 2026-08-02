@@ -30,18 +30,76 @@ class FoxESSModbusClient:
         self._tid = (self._tid + 1) % 0xFFFF
         return self._tid
 
-    def _send_recv(self, request: bytes, timeout: float = 5.0) -> bytes | None:
-        try:
-            with socket.create_connection((self._host, self._port), timeout=timeout) as sock:
-                sock.sendall(request)
-                header = recv_exact(sock, 7)
-                length = int.from_bytes(header[4:6], "big")
-                payload = recv_exact(sock, length - 1)
-                return header + payload
-        except Exception as ex:
-            _LOGGER.error("Modbus TCP %s:%s – Verbindungsfehler: %s", self._host, self._port, ex)
-            return None
+def _recv_exact(
+    self,
+    sock: socket.socket,
+    length: int,
+) -> bytes:
+    data = bytearray()
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
+        if not chunk:
+            raise ConnectionError(
+                "Modbus TCP connection closed before full response was received"
+            )
+        data.extend(chunk)
+    return bytes(data)
 
+
+def _send_recv(
+    self,
+    request: bytes,
+    timeout: float = 5.0,
+) -> bytes | None:
+    try:
+        with socket.create_connection(
+            (self._host, self._port),
+            timeout=timeout,
+        ) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(request)
+
+            header = self._recv_exact(sock, 7)
+
+            protocol_id = int.from_bytes(header[2:4], "big")
+            response_length = int.from_bytes(header[4:6], "big")
+
+            if protocol_id != 0:
+                raise ValueError(
+                    f"Invalid Modbus protocol ID: {protocol_id}"
+                )
+
+            pdu_length = response_length - 1
+
+            if pdu_length < 1:
+                raise ValueError(
+                    f"Invalid Modbus response length: {response_length}"
+                )
+
+            pdu = self._recv_exact(sock, pdu_length)
+            response = header + pdu
+            if response[0:2] != request[0:2]:
+                raise ValueError(
+                    "Modbus transaction ID mismatch: "
+                    f"sent {request[0:2].hex()}, "
+                    f"received {response[0:2].hex()}"
+                )
+            if response[6] != self._slave_id:
+                raise ValueError(
+                    "Modbus unit ID mismatch: "
+                    f"expected {self._slave_id}, received {response[6]}"
+                )
+            return response
+    except Exception as ex:
+        _LOGGER.error(
+            "Modbus TCP %s:%s communication error: %s",
+            self._host,
+            self._port,
+            ex,
+        )
+        return None
+
+    
     def _build_mbap(self, pdu: bytes) -> bytes:
         """Baut den vollständigen Modbus TCP ADU (MBAP + PDU)."""
         tid     = self._next_tid()
