@@ -146,21 +146,20 @@ class FoxESSAutoPhaseSwitchSwitch(SwitchEntity):
         return (self._coordinator.data or {}).get("auto_phase_switch") == 1
 
     async def async_turn_on(self, **kwargs) -> None:
-        success = await self.hass.async_add_executor_job(
-            self._client.write_holding_register, REG_AUTO_PHASE_SWITCH, 1
+        await self._coordinator.async_cache_register(
+            REG_AUTO_PHASE_SWITCH,
+            1,
+            "auto_phase_switch",
         )
-        if success:
-            self._coordinator.data["auto_phase_switch"] = 1
-            self.async_write_ha_state()
-        await asyncio.sleep(1.5)
-        await self._coordinator.async_request_refresh()
-
+    
+        self.async_write_ha_state()
+    
+    
     async def async_turn_off(self, **kwargs) -> None:
-        success = await self.hass.async_add_executor_job(
-            self._client.write_holding_register, REG_AUTO_PHASE_SWITCH, 0
+        await self._coordinator.async_cache_register(
+            REG_AUTO_PHASE_SWITCH,
+            0,
+            "auto_phase_switch",
         )
-        if success:
-            self._coordinator.data["auto_phase_switch"] = 0
-            self.async_write_ha_state()
-        await asyncio.sleep(1.5)
-        await self._coordinator.async_request_refresh()
+    
+        self.async_write_ha_state()
