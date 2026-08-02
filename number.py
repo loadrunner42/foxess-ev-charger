@@ -12,6 +12,7 @@ from homeassistant.const import UnitOfElectricCurrent, UnitOfPower, UnitOfTime, 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
@@ -104,7 +105,10 @@ async def async_setup_entry(
     ])
 
 
-class FoxESSNumber(NumberEntity):
+class FoxESSNumber(
+        CoordinatorEntity[FoxESSChargerCoordinator],
+        NumberEntity,
+    ):
     _attr_has_entity_name = True
     entity_description: FoxESSNumberDescription
 
