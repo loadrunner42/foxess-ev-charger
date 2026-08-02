@@ -26,6 +26,7 @@ async def async_setup_entry(
     async_add_entities([
         FoxESSChargingSwitch(d["coordinator"], d["client"], entry),
         FoxESSLockSwitch(d["coordinator"], d["client"], entry),
+        FoxESSSessionLimitsSwitch(d["coordinator"], entry),
         FoxESSAutoPhaseSwitchSwitch(d["coordinator"], d["client"], entry),
     ])
 
@@ -124,7 +125,44 @@ class FoxESSLockSwitch(CoordinatorEntity[FoxESSChargerCoordinator], SwitchEntity
         await asyncio.sleep(1.5)
         await self._coordinator.async_request_refresh()
 
+class FoxESSSessionLimitsSwitch(
+    CoordinatorEntity[FoxESSChargerCoordinator],
+    SwitchEntity,
+):
+    """Enable or disable both session time and energy limits."""
 
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:timer-lock"
+
+    def __init__(
+        self,
+        coordinator: FoxESSChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator)
+
+        self._attr_unique_id = (
+            f"{entry.entry_id}_session_limits_enabled"
+        )
+        self._attr_name = "Session Limits"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.session_limits_enabled
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.coordinator.async_set_session_limits_enabled(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.async_set_session_limits_enabled(False)
+        self.async_write_ha_state()
+        
 class FoxESSAutoPhaseSwitchSwitch(CoordinatorEntity[FoxESSChargerCoordinator], SwitchEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:auto-fix"
