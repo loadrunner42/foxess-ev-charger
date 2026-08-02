@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, REG_CHARGING_CONTROL, REG_LOCK_CONTROL, REG_AUTO_PHASE_SWITCH
 from .__init__ import FoxESSChargerCoordinator
