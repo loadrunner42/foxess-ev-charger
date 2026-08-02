@@ -98,6 +98,92 @@ class FoxESSModbusClient:
         else:
             return self._write_multiple(address, value)
 
+    def write_holding_registers(
+        self,
+        address: int,
+        values: list[int],
+    ) -> bool:
+        """Write consecutive R/W holding registers in one FC 0x10 request."""
+        if not values:
+            return True
+    
+        if not 1 <= len(values) <= 123:
+            raise ValueError(
+                f"Modbus FC10 supports 1-123 registers, got {len(values)}"
+            )
+    
+        for value in values:
+            if not 0 <= value <= 0xFFFF:
+                raise ValueError(
+                    f"Register value must be 0-65535, got {value}"
+                )
+    
+        quantity = len(values)
+        payload = b"".join(
+            value.to_bytes(2, "big")
+            for value in values
+        )
+    
+        pdu = (
+            FC_WRITE_MULTIPLE.to_bytes(1, "big")
+            + address.to_bytes(2, "big")
+            + quantity.to_bytes(2, "big")
+            + len(payload).to_bytes(1, "big")
+            + payload
+        )
+    
+        response = self._send_recv(self._build_mbap(pdu))
+    
+        if response is None:
+            return False
+    
+        if len(response) >= 9 and response[7] == (
+            FC_WRITE_MULTIPLE | 0x80
+        ):
+            _LOGGER.error(
+                "FC10 block-write exception 0x%02X @ 0x%04X count=%d",
+                response[8],
+                address,
+                quantity,
+            )
+            return False
+    
+        if len(response) < 12:
+            _LOGGER.warning(
+                "FC10 block write 0x%04X count=%d: short response: %s",
+                address,
+                quantity,
+                response.hex(),
+            )
+            return False
+    
+        response_address = int.from_bytes(response[8:10], "big")
+        response_quantity = int.from_bytes(response[10:12], "big")
+    
+        success = (
+            response_address == address
+            and response_quantity == quantity
+        )
+    
+        if success:
+            _LOGGER.debug(
+                "FC10 block write 0x%04X count=%d values=%s",
+                address,
+                quantity,
+                values,
+            )
+        else:
+            _LOGGER.warning(
+                "FC10 block write mismatch: requested 0x%04X/%d, "
+                "response 0x%04X/%d",
+                address,
+                quantity,
+                response_address,
+                response_quantity,
+            )
+    
+        return success
+    
     # ── Private Write-Methoden ────────────────────────────────────────────────
 
     def _write_single(self, address: int, value: int) -> bool:
