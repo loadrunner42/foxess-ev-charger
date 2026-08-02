@@ -249,6 +249,7 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
             data["software_version"]= regs[1]
             data["stop_reason"]     = regs[2]
             data["status"]          = regs[3]
+            current_status          = regs[3]
             data["cp_status"]       = regs[4]
             data["cc_status"]       = regs[5]
             data["port_temp_raw"]   = regs[6]
@@ -336,9 +337,9 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
                     "Could not refresh dynamic block 0x3001-0x3002"
                 )
 
-        current_status = data["status"]
         charging_started = (
-            current_status in self._ACTIVE_CHARGING_STATES
+            current_status is not None
+            and current_status in self._ACTIVE_CHARGING_STATES
             and previous_status not in self._ACTIVE_CHARGING_STATES
         )
         
