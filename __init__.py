@@ -313,10 +313,7 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
                 [desired[register]],
             )
 
-            if success:
-                data_key = self._REGISTER_TO_DATA_KEY[register]
-                data[data_key] = desired[register]
-            else:
+            if not success:
                 _LOGGER.warning(
                     "Could not restore setting 0x%04X=%d",
                     register,
