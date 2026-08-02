@@ -27,7 +27,7 @@ class FoxESSModbusClient:
     # ── Interne Hilfsmethoden ─────────────────────────────────────────────────
 
     def _next_tid(self) -> int:
-        self._tid = (self._tid + 1) % 0xFFFF
+        self._tid = (self._tid + 1) & 0xFFFF
         return self._tid
 
 def _recv_exact(
