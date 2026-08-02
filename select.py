@@ -56,22 +56,28 @@ class FoxESSWorkModeSelect(SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        raw = self._coordinator.data.get("work_mode") if self._coordinator.data else None
-        return self._options_map.get(raw) if raw is not None else None
+        raw = (
+            self._coordinator.data or {}
+        ).get("work_mode")
+    
+        if raw is None:
+            return None
+    
+        return self._options_map.get(raw)
 
-    async def async_select_option(self, option: str) -> None:
+    async def async_select_option(
+        self,
+        option: str,
+    ) -> None:
         value = self._reverse_map[option]
-        _LOGGER.debug("FoxESS: write work_mode=%s (%d) → 0x%04X", option, value, REG_WORK_MODE)
-        success = await self.hass.async_add_executor_job(
-            self._client.write_holding_register, REG_WORK_MODE, value  # ← REG_WORK_MODE (FC 0x10)
+    
+        await self._coordinator.async_cache_register(
+            REG_WORK_MODE,
+            value,
+            "work_mode",
         )
-        if success:
-            self._coordinator.data["work_mode"] = value
-            self.async_write_ha_state()
-        else:
-            _LOGGER.error("FoxESS: Work Mode write FAILED for option=%s", option)
-        await asyncio.sleep(1.5)
-        await self._coordinator.async_request_refresh()
+    
+        self.async_write_ha_state()
 
 
 class FoxESSPhaseSelect(SelectEntity):
