@@ -1,6 +1,7 @@
 """FoxESS EV Charger integration."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -15,12 +16,30 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     FAULT_BITS, ALARM_BITS, decode_bitmask,
     REG_TOTAL_ENERGY, REG_CURRENT_ENERGY, REG_FAULT_CODE, REG_RFID_CARD,
+    REG_MAX_CHARGING_CURRENT, REG_MAX_CHARGING_POWER,
 )
 from .modbus_client import FoxESSModbusClient
 
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "A7300P1-E-B-WO"
+
+# Registers the charger's own "Command Time Validity" timeout (0x3005, §2.34
+# in the FoxESS Modbus spec) applies to. Per the protocol, the charger reverts
+# these to its device maximum if neither is rewritten within that window -
+# mirrors evcc's foxess-evc driver, which re-asserts the same register
+# (0x3002) on a heartbeat for the same reason (see evcc-io/evcc discussion
+# #26218 and charger/foxess-evc.go).
+HEARTBEAT_REGISTERS: tuple[tuple[str, int], ...] = (
+    ("max_charging_current_raw", REG_MAX_CHARGING_CURRENT),
+    ("max_charging_power_raw",   REG_MAX_CHARGING_POWER),
+)
+
+# Half the device's own Command Time Validity window, same margin evcc uses
+# (heartbeat interval = timeValidity / 2). Clamped so a misread/zero value
+# can't produce a zero or negative sleep.
+MIN_HEARTBEAT_INTERVAL = 5      # seconds - matches the register's own minimum
+DEFAULT_TIME_VALIDITY  = 60     # seconds - used until the first read succeeds
 
 
 def build_device_info(entry: ConfigEntry, coordinator: "FoxESSChargerCoordinator") -> DeviceInfo:
@@ -47,6 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = FoxESSChargerCoordinator(hass, client, scan_interval)
 
     await coordinator.async_config_entry_first_refresh()
+    coordinator.async_start_heartbeat()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "coordinator": coordinator,
@@ -67,6 +87,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         data = hass.data[DOMAIN].pop(entry.entry_id)
+        # Stop the heartbeat before dropping the connection, so it can't fire
+        # a write against a socket that's about to be closed out from under it.
+        await data["coordinator"].async_stop_heartbeat()
         await hass.async_add_executor_job(data["client"].disconnect)
     return unload_ok
 
@@ -77,10 +100,78 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, client: FoxESSModbusClient,
                  scan_interval: int) -> None:
         self.client = client
+        self._heartbeat_task: asyncio.Task | None = None
         super().__init__(
             hass, _LOGGER, name=DOMAIN,
             update_interval=timedelta(seconds=scan_interval),
         )
+
+    # ── Heartbeat: re-assert the charge-limit registers ──────────────────────
+    # See HEARTBEAT_REGISTERS above for why this exists. Mirrors evcc's
+    # foxess-evc driver (charger/foxess-evc.go: heartbeat()), which runs the
+    # same re-assert loop at half the device's Command Time Validity window.
+
+    @property
+    def _heartbeat_interval(self) -> float:
+        """Half the device's own Command Time Validity (0x3005), like evcc."""
+        time_validity = (self.data or {}).get("time_validity") or DEFAULT_TIME_VALIDITY
+        return max(MIN_HEARTBEAT_INTERVAL, time_validity / 2)
+
+    def async_start_heartbeat(self) -> None:
+        """Start the background heartbeat task. Call once after first refresh."""
+        if self._heartbeat_task is None:
+            self._heartbeat_task = self.hass.loop.create_task(
+                self._heartbeat_loop(), name=f"{DOMAIN}_heartbeat"
+            )
+
+    async def async_stop_heartbeat(self) -> None:
+        """Cancel the heartbeat task, if running, and wait for it to exit."""
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(self._heartbeat_interval)
+            except asyncio.CancelledError:
+                return
+            await self._async_heartbeat_tick()
+
+    async def _async_heartbeat_tick(self) -> None:
+        """Re-write the last known value of each heartbeat register.
+
+        Uses whatever is already cached in self.data - the same value the
+        coordinator's own poll last read back, or that a number entity's
+        optimistic update last set - so this never invents a value of its
+        own. If neither register has a cached value yet (e.g. the very first
+        poll after startup failed), there's nothing to re-assert this tick.
+        """
+        data = self.data or {}
+        writes = [
+            (register, data[data_key])
+            for data_key, register in HEARTBEAT_REGISTERS
+            if data.get(data_key) is not None
+        ]
+        if not writes:
+            return
+
+        def _write_all() -> None:
+            for register, value in writes:
+                if not self.client.write_holding_register(register, value):
+                    _LOGGER.warning(
+                        "FoxESS heartbeat: failed to re-assert 0x%04X=%d",
+                        register, value,
+                    )
+
+        try:
+            await self.hass.async_add_executor_job(_write_all)
+        except Exception as err:  # noqa: BLE001 - never let the loop die on a bad tick
+            _LOGGER.error("FoxESS heartbeat: %s", err)
 
     async def _async_update_data(self) -> dict:
         try:
