@@ -261,9 +261,23 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
         # though those registers are all readable on their own.
         cfg = self.client.read_registers(0x3000, 7)
         if cfg and len(cfg) >= 7:
-            data["work_mode"]                = cfg[0]
-            data["max_charging_current_raw"] = cfg[1]
-            data["max_charging_power_raw"]   = cfg[2]
+            data["work_mode"] = cfg[0]
+
+            # Only trust the device's max-power/current registers while a
+            # session is actually active - see the block comment above. But
+            # a fetch that has nothing cached yet (a fresh coordinator, or
+            # right after startup before any prior value exists) still
+            # needs *something* to show rather than leaving these keys
+            # permanently unset, so the very first population always takes
+            # the device's value regardless of status; RestoreEntity (in
+            # number.py) corrects it afterwards if a pre-restart value
+            # should take precedence instead.
+            active = data.get("status") in ACTIVE_CHARGING_STATUSES
+            if active or "max_charging_current_raw" not in data:
+                data["max_charging_current_raw"] = cfg[1]
+            if active or "max_charging_power_raw" not in data:
+                data["max_charging_power_raw"] = cfg[2]
+
             data["allowed_charge_time"]      = cfg[3]
             data["allowed_charge_energy"]    = cfg[4]
             data["time_validity"]            = cfg[5]

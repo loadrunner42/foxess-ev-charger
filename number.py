@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent, UnitOfPower, UnitOfTime, UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
     DOMAIN,
@@ -29,7 +30,7 @@ _LOGGER = logging.getLogger(__name__)
 class FoxESSNumberDescription(NumberEntityDescription):
     register:         int                    = 0
     data_key:         str                    = ""
-    scale_to_raw:     Callable[[float], int] = lambda v: int(v)
+    scale_to_raw:     Callable[[float], int] = lambda v: int(round(v))
     scale_to_ha:      Callable[[int], float] = lambda v: float(v)
     blank_sentinel:   int | None             = None
     # True for the two registers where a device write doubles as an implicit
@@ -114,7 +115,7 @@ async def async_setup_entry(
     ])
 
 
-class FoxESSNumber(NumberEntity):
+class FoxESSNumber(NumberEntity, RestoreEntity):
     _attr_has_entity_name = True
     entity_description: FoxESSNumberDescription
 
@@ -130,6 +131,43 @@ class FoxESSNumber(NumberEntity):
         self.entity_description = description
         self._attr_unique_id   = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = build_device_info(entry, coordinator)
+
+    async def async_added_to_hass(self) -> None:
+        """Restore this entity's pre-restart value for the two
+        gate_on_charging entries (Max Charging Current/Power).
+
+        coordinator.data is purely in-memory - it starts empty on every HA
+        restart, so without this, a limit configured while stopped (and
+        deliberately withheld from the device - see async_set_native_value
+        below) would be lost the moment HA restarts, even though it was
+        never wrong, just not-yet-applied. If the device happens to already
+        be mid-session when HA comes back up, the freshly-read live value
+        is the more trustworthy source, so restoration is skipped and this
+        cycle's real read (from _fetch(), already gated the same way in
+        __init__.py) wins instead.
+        """
+        await super().async_added_to_hass()
+        desc = self.entity_description
+        if not desc.gate_on_charging:
+            return
+        if (self._coordinator.data or {}).get("status") in ACTIVE_CHARGING_STATUSES:
+            return
+
+        last_state = await self.async_get_last_state()
+        if last_state is None or last_state.state in (None, "unknown", "unavailable"):
+            return
+        try:
+            restored_value = float(last_state.state)
+        except (TypeError, ValueError):
+            _LOGGER.debug(
+                "FoxESS: could not restore %s from last state %r",
+                desc.key, last_state.state,
+            )
+            return
+
+        raw = desc.scale_to_raw(restored_value)
+        self._coordinator.data[desc.data_key] = raw
+        self.async_write_ha_state()
 
     @property
     def available(self) -> bool:
