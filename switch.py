@@ -52,17 +52,32 @@ class FoxESSChargingSwitch(SwitchEntity):
         return (self._coordinator.data or {}).get("status") in ACTIVE_CHARGING_STATUSES
 
     async def async_turn_on(self, **kwargs) -> None:
-        success = await self.hass.async_add_executor_job(
-            self._client.write_holding_register, REG_CHARGING_CONTROL, 1
-        )
-        if success:
-            self._coordinator.data["status"] = 3
-            self.async_write_ha_state()
-            # Push the currently-configured limit immediately, rather than
-            # leaving the charger on whatever it already had (a prior
-            # session's value, or firmware default) until the next
-            # heartbeat tick catches up - up to time_validity/2 seconds later.
-            await self._coordinator.async_reassert_charge_limits()
+        """Starts charging WITHOUT writing REG_CHARGING_CONTROL.
+
+        On this firmware, writing a nonzero value to the max-power/current
+        registers is itself sufficient to start (or resume) charging -
+        that's the exact mechanism that caused charging to silently resume
+        every heartbeat tick before ACTIVE_CHARGING_STATUSES gated it (see
+        __init__.py). The old version of this method wrote
+        REG_CHARGING_CONTROL=1 FIRST and pushed the cached limit second -
+        which left a real window where the charger had already been told
+        to start but hadn't yet received the limit, and would ramp to
+        whatever it already had (its own default, e.g. 32A) until the
+        follow-up write landed: a visible current spike.
+
+        Pushing the limit is the only step now, and it goes first (in
+        effect, the only step) - the charger only ever starts already
+        holding the correct limit, because the limit write is what starts
+        it. No optimistic status update here either: is_on and the
+        heartbeat both key off coordinator.data["status"], which is left
+        alone until the coordinator's own read (the async_request_refresh
+        below, or whatever poll comes next) reports the device's real
+        status back - at that point the heartbeat's existing
+        ACTIVE_CHARGING_STATUSES gate picks the session up on its own,
+        exactly as if charging had been started from the charger's own
+        front panel rather than through this integration at all.
+        """
+        await self._coordinator.async_reassert_charge_limits()
         await asyncio.sleep(1.5)
         await self._coordinator.async_request_refresh()
 
