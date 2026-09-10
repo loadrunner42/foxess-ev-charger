@@ -17,7 +17,7 @@ from .const import (
     REG_MAX_CHARGING_CURRENT, REG_MAX_CHARGING_POWER,
     REG_ALLOWED_CHARGE_TIME,  REG_ALLOWED_CHARGE_ENERGY,
     REG_TIME_VALIDITY,        REG_DEFAULT_CURRENT,
-    REG_MIN_SWITCH_INTERVAL,
+    REG_MIN_SWITCH_INTERVAL,  ACTIVE_CHARGING_STATUSES,
 )
 from .__init__ import FoxESSChargerCoordinator, build_device_info
 from .modbus_client import FoxESSModbusClient
@@ -27,11 +27,17 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, kw_only=True)
 class FoxESSNumberDescription(NumberEntityDescription):
-    register:       int                    = 0
-    data_key:       str                    = ""
-    scale_to_raw:   Callable[[float], int] = lambda v: int(v)
-    scale_to_ha:    Callable[[int], float] = lambda v: float(v)
-    blank_sentinel: int | None             = None
+    register:         int                    = 0
+    data_key:         str                    = ""
+    scale_to_raw:     Callable[[float], int] = lambda v: int(v)
+    scale_to_ha:      Callable[[int], float] = lambda v: float(v)
+    blank_sentinel:   int | None             = None
+    # True for the two registers where a device write doubles as an implicit
+    # "resume charging" command on FoxESS firmware (see const.py's
+    # ACTIVE_CHARGING_STATUSES comment). For those, async_set_native_value
+    # below withholds the Modbus write entirely while charging isn't active,
+    # rather than risk starting a session just from moving a slider.
+    gate_on_charging: bool                  = False
 
 
 NUMBERS: tuple[FoxESSNumberDescription, ...] = (
@@ -43,6 +49,7 @@ NUMBERS: tuple[FoxESSNumberDescription, ...] = (
         register=REG_MAX_CHARGING_CURRENT, data_key="max_charging_current_raw",
         scale_to_raw=lambda v: int(round(v * 10)),
         scale_to_ha =lambda v: round(v * 0.1, 1),
+        gate_on_charging=True,
     ),
     FoxESSNumberDescription(
         key="max_charging_power", name="Max Charging Power",
@@ -52,6 +59,7 @@ NUMBERS: tuple[FoxESSNumberDescription, ...] = (
         register=REG_MAX_CHARGING_POWER, data_key="max_charging_power_raw",
         scale_to_raw=lambda v: int(round(v * 10)),
         scale_to_ha =lambda v: round(v * 0.1, 1),
+        gate_on_charging=True,
     ),
     FoxESSNumberDescription(
         key="allowed_charge_time", name="Allowed Charge Time",
@@ -138,6 +146,23 @@ class FoxESSNumber(NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         desc = self.entity_description
         raw  = desc.scale_to_raw(value)
+
+        if desc.gate_on_charging and (self._coordinator.data or {}).get("status") not in ACTIVE_CHARGING_STATUSES:
+            # Withhold the device write: on this firmware, writing a nonzero
+            # max-power/current register is itself an implicit "resume
+            # charging" command, not a passive limit update (see
+            # ACTIVE_CHARGING_STATUSES in const.py). Cache the desired value
+            # locally instead - FoxESSChargingSwitch.async_turn_on pushes it
+            # the moment charging is actually turned on, and the heartbeat
+            # keeps it applied for the rest of the session.
+            _LOGGER.debug(
+                "FoxESS: %s=%s cached but not sent - charging is not active "
+                "(0x%04X would resume it)", desc.key, value, desc.register,
+            )
+            self._coordinator.data[desc.data_key] = raw
+            self.async_write_ha_state()
+            return
+
         _LOGGER.debug(
             "FoxESS: write %s=%s (raw=%d) → 0x%04X",
             desc.key, value, raw, desc.register,
