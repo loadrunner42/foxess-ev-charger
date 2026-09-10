@@ -16,7 +16,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     FAULT_BITS, ALARM_BITS, decode_bitmask,
     REG_TOTAL_ENERGY, REG_CURRENT_ENERGY, REG_FAULT_CODE, REG_RFID_CARD,
-    REG_MAX_CHARGING_CURRENT, REG_MAX_CHARGING_POWER,
+    REG_MAX_CHARGING_CURRENT, REG_MAX_CHARGING_POWER, ACTIVE_CHARGING_STATUSES,
 )
 from .modbus_client import FoxESSModbusClient
 
@@ -143,13 +143,36 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
             await self._async_heartbeat_tick()
 
     async def _async_heartbeat_tick(self) -> None:
-        """Re-write the last known value of each heartbeat register.
+        """Gate, then re-assert. Called only on the heartbeat's own schedule.
+
+        Gated on ACTIVE_CHARGING_STATUSES: on FoxESS firmware, writing a
+        nonzero max-power/current register is itself an implicit "resume
+        charging" command, not a passive limit update. Re-asserting it while
+        the Charging switch has stopped the session (status "finished") would
+        silently restart charging out from under the user every heartbeat
+        tick - which is exactly what re-asserting unconditionally used to do.
+        """
+        data = self.data or {}
+        if data.get("status") not in ACTIVE_CHARGING_STATUSES:
+            return
+        await self.async_reassert_charge_limits()
+
+    async def async_reassert_charge_limits(self) -> None:
+        """Write the last known value of each heartbeat register, right now.
 
         Uses whatever is already cached in self.data - the same value the
         coordinator's own poll last read back, or that a number entity's
         optimistic update last set - so this never invents a value of its
-        own. If neither register has a cached value yet (e.g. the very first
-        poll after startup failed), there's nothing to re-assert this tick.
+        own. If neither register has a cached value yet (e.g. a fresh
+        install with no prior session), there's nothing to push and this is
+        a no-op.
+
+        Unlike _async_heartbeat_tick, this is NOT gated on session status -
+        it's the shared "push both registers" primitive, called either by
+        the heartbeat (after it has already checked status) or directly by
+        FoxESSChargingSwitch.async_turn_on, which calls this immediately on
+        turning charging on rather than waiting up to time_validity/2 seconds
+        for the next heartbeat tick to apply the currently-configured limit.
         """
         data = self.data or {}
         writes = [
@@ -164,14 +187,14 @@ class FoxESSChargerCoordinator(DataUpdateCoordinator):
             for register, value in writes:
                 if not self.client.write_holding_register(register, value):
                     _LOGGER.warning(
-                        "FoxESS heartbeat: failed to re-assert 0x%04X=%d",
+                        "FoxESS: failed to assert 0x%04X=%d",
                         register, value,
                     )
 
         try:
             await self.hass.async_add_executor_job(_write_all)
-        except Exception as err:  # noqa: BLE001 - never let the loop die on a bad tick
-            _LOGGER.error("FoxESS heartbeat: %s", err)
+        except Exception as err:  # noqa: BLE001 - never let a caller crash on this
+            _LOGGER.error("FoxESS: %s", err)
 
     async def _async_update_data(self) -> dict:
         try:

@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, REG_CHARGING_CONTROL, REG_LOCK_CONTROL, REG_AUTO_PHASE_SWITCH
+from .const import DOMAIN, REG_CHARGING_CONTROL, REG_LOCK_CONTROL, REG_AUTO_PHASE_SWITCH, ACTIVE_CHARGING_STATUSES
 from .__init__ import FoxESSChargerCoordinator, build_device_info
 from .modbus_client import FoxESSModbusClient
 
@@ -49,7 +49,7 @@ class FoxESSChargingSwitch(SwitchEntity):
         # 2=start, 3=charging, 4=pause (suspended by the car, not by a stop
         # command - the session is still active and will resume on its own,
         # so it should read as "on" rather than looking identical to stopped).
-        return (self._coordinator.data or {}).get("status") in (2, 3, 4)
+        return (self._coordinator.data or {}).get("status") in ACTIVE_CHARGING_STATUSES
 
     async def async_turn_on(self, **kwargs) -> None:
         success = await self.hass.async_add_executor_job(
@@ -58,6 +58,11 @@ class FoxESSChargingSwitch(SwitchEntity):
         if success:
             self._coordinator.data["status"] = 3
             self.async_write_ha_state()
+            # Push the currently-configured limit immediately, rather than
+            # leaving the charger on whatever it already had (a prior
+            # session's value, or firmware default) until the next
+            # heartbeat tick catches up - up to time_validity/2 seconds later.
+            await self._coordinator.async_reassert_charge_limits()
         await asyncio.sleep(1.5)
         await self._coordinator.async_request_refresh()
 
